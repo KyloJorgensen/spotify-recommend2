@@ -1,0 +1,210 @@
+/**
+ * This is an example of a basic node.js script that performs
+ * the Authorization Code oAuth2 flow to authenticate against
+ * the Spotify Accounts.
+ *
+ * For more information, read
+ * https://developer.spotify.com/web-api/authorization-guide/#authorization_code_flow
+ */
+
+var unirest = require('unirest'),
+    express = require('express'),
+    events = require('events'); // Express web server framework
+var request = require('request'); // "Request" library
+var querystring = require('querystring');
+var cookieParser = require('cookie-parser');
+
+var client_id = '249d38f2689b41d2ba9b88d016526cd9'; // Your client id
+var client_secret = 'c958c6fe913744afb87ed9f802d33fc5'; // Your secret
+var redirect_uri = 'http://localhost:8888/callback'; // Your redirect uri
+
+/**
+ * Generates a random string containing numbers and letters
+ * @param  {number} length The length of the string
+ * @return {string} The generated string
+ */
+var generateRandomString = function(length) {
+    var text = '';
+    var possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+    for (var i = 0; i < length; i++) {
+        text += possible.charAt(Math.floor(Math.random() * possible.length));
+    }
+    return text;
+};
+
+var stateKey = 'spotify_auth_state';
+
+var app = express();
+
+app.use(express.static(__dirname + '/public'))
+    .use(cookieParser());
+
+app.get('/login', function(req, res) {
+
+    var state = generateRandomString(16);
+    res.cookie(stateKey, state);
+
+    // your application requests authorization
+    var scope = 'user-read-private user-read-email';
+    res.redirect('https://accounts.spotify.com/authorize?' +
+        querystring.stringify({
+            response_type: 'code',
+            client_id: client_id,
+            scope: scope,
+            redirect_uri: redirect_uri,
+            state: state
+        }));
+});
+
+app.get('/callback', function(req, res) {
+
+    // your application requests refresh and access tokens
+    // after checking the state parameter
+
+    var code = req.query.code || null;
+    var state = req.query.state || null;
+    var storedState = req.cookies ? req.cookies[stateKey] : null;
+
+    if (state === null || state !== storedState) {
+        res.redirect('/#' +
+            querystring.stringify({
+                error: 'state_mismatch'
+            }));
+    } else {
+        res.clearCookie(stateKey);
+        var authOptions = {
+            url: 'https://accounts.spotify.com/api/token',
+            form: {
+                code: code,
+                redirect_uri: redirect_uri,
+                grant_type: 'authorization_code'
+            },
+            headers: {
+                'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64'))
+            },
+            json: true
+        };
+
+        request.post(authOptions, function(error, response, body) {
+            if (!error && response.statusCode === 200) {
+
+                var access_token = body.access_token,
+                    refresh_token = body.refresh_token;
+
+                var options = {
+                    url: '/recommender',
+                    headers: { 'Authorization': 'Bearer ' + access_token },
+                    json: true
+                };
+
+                // use the access token to access the Spotify Web API
+                request.get(options, function(error, response, body) {
+                    console.log(body);
+                });
+
+                // we can also pass the token to the browser to make requests from there
+                res.redirect('/#' +
+                    querystring.stringify({
+                        access_token: access_token,
+                        refresh_token: refresh_token
+                    }));
+            } else {
+                res.redirect('/#' +
+                    querystring.stringify({
+                        error: 'invalid_token'
+                    }));
+            }
+        });
+    }
+});
+
+app.get('/refresh_token', function(req, res) {
+
+    // requesting access token from refresh token
+    var refresh_token = req.query.refresh_token;
+    var authOptions = {
+        url: 'https://accounts.spotify.com/api/token',
+        headers: { 'Authorization': 'Basic ' + (new Buffer(client_id + ':' + client_secret).toString('base64')) },
+        form: {
+            grant_type: 'refresh_token',
+            refresh_token: refresh_token
+        },
+        json: true
+    };
+
+    request.post(authOptions, function(error, response, body) {
+        if (!error && response.statusCode === 200) {
+            var access_token = body.access_token;
+            res.send({
+                'access_token': access_token
+            });
+        }
+    });
+});
+
+var getFromApi = function(endpoint, args) {
+    var emitter = new events.EventEmitter();
+    unirest.get('https://api.spotify.com/v1/' + endpoint)
+        .qs(args)
+        .end(function(response) {
+            if (response.ok) {
+                emitter.emit('end', response.body);
+
+            } else {
+                emitter.emit('error', response.body);
+            }
+        });
+    return emitter;
+};
+
+app.get('/recommender', function(req, res) {
+    res.sendFile(path.join(__dirname, '../public/recommend.html'));
+});
+
+app.get('/search/:name', function(req, res) {
+    var searchReq = getFromApi('search', {
+        q: req.params.name,
+        limit: 1,
+        type: 'artist'
+    });
+
+    searchReq.on('end', function(item) {
+        var artist = item.artists.items[0];
+        if (artist) {
+            var relatedReq = getFromApi('artists/' + artist.id + '/related-artists');
+            relatedReq.on('end', function(item) {
+                artist.related = item.artists;
+                for (var i = 0; i < artist.related.length; i++) {
+                  artist.related[i]
+                  var trackReq = getFromApi('artists/' + artist.related[i].id + '/top-tracks?country=US');
+                  trackReq.on('end', function(item) {
+                    console.log(item.tracks[0].album.name);
+                    if (item.tracks) {
+                      console.log(true);
+                      console.log(item.tracks)
+                    }
+                    artist.related[i].tracks = item.tracks;
+                  });
+                  trackReq.on('error', function(code) {
+                    console.log(code);
+                  });
+                };
+                res.json(artist);
+            });
+
+            relatedReq.on('error', function(code) {
+                res.sendStatus(code);
+            })
+        } else {
+            res.status(404).end();
+        }
+    });
+
+    searchReq.on('error', function(code) {
+        res.sendStatus(code);
+    });
+});
+
+console.log('Listening on 8888');
+app.listen(8888);
