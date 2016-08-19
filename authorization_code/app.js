@@ -143,15 +143,17 @@ app.get('/refresh_token', function(req, res) {
     });
 });
 
-var getFromApi = function(endpoint, args) {
+var getFromApi = function(endpoint, args, i) {
     var emitter = new events.EventEmitter();
     unirest.get('https://api.spotify.com/v1/' + endpoint)
         .qs(args)
         .end(function(response) {
             if (response.ok) {
+                response.body.i = i;
                 emitter.emit('end', response.body);
 
             } else {
+                response.body.i = i;
                 emitter.emit('error', response.body);
             }
         });
@@ -175,22 +177,31 @@ app.get('/search/:name', function(req, res) {
             var relatedReq = getFromApi('artists/' + artist.id + '/related-artists');
             relatedReq.on('end', function(item) {
                 artist.related = item.artists;
+                console.log(artist.related.length);
+                var done = 0;
                 for (var i = 0; i < artist.related.length; i++) {
-                  artist.related[i]
-                  var trackReq = getFromApi('artists/' + artist.related[i].id + '/top-tracks?country=US');
-                  trackReq.on('end', function(item) {
-                    console.log(item.tracks[0].album.name);
-                    if (item.tracks) {
-                      console.log(true);
-                      console.log(item.tracks)
-                    }
-                    artist.related[i].tracks = item.tracks;
-                  });
-                  trackReq.on('error', function(code) {
-                    console.log(code);
-                  });
+                    console.log(i);
+                    console.log(artist.related[i].id);
+                    var trackReq = getFromApi('artists/' + artist.related[i].id + '/top-tracks?country=US', {}, i);
+                    trackReq.on('end', function(item) {
+                        console.log(item.i);
+                        artist.related[item.i].tracks = item.tracks;
+                        done++;
+                        if (done == artist.related.length) {
+                            console.log('sending');
+                            res.json(artist);
+                        }
+                    });
+                    trackReq.on('error', function(code) {
+                        artist.related[code.i].tracks = {};
+                        console.log(code);
+                        done++;
+                        if (done == artist.related.length) {
+                            console.log('sending');
+                            res.json(artist);
+                        }
+                    });
                 };
-                res.json(artist);
             });
 
             relatedReq.on('error', function(code) {
